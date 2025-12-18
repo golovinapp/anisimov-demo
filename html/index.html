@@ -1,0 +1,753 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>СтройКонтроль — CRM</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        * { -webkit-tap-highlight-color: transparent; box-sizing: border-box; }
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; }
+        
+        .kanban-card { 
+            transition: transform 0.15s, box-shadow 0.15s, opacity 0.15s;
+            user-select: none;
+        }
+        .kanban-card.dragging { 
+            opacity: 0.8; 
+            transform: scale(1.02) rotate(2deg); 
+            box-shadow: 0 10px 30px rgba(0,0,0,0.2); 
+            z-index: 1000;
+            position: fixed;
+            pointer-events: none;
+        }
+        .kanban-card.drag-source {
+            opacity: 0.3;
+        }
+        .kanban-column.drag-over { 
+            background: rgba(59, 130, 246, 0.1) !important; 
+            border: 2px dashed #3b82f6; 
+        }
+        
+        .kanban-container { 
+            display: flex; 
+            gap: 12px; 
+            overflow-x: auto; 
+            padding-bottom: 16px; 
+            scroll-snap-type: x mandatory; 
+            -webkit-overflow-scrolling: touch; 
+        }
+        .kanban-column { 
+            flex: 0 0 auto; 
+            scroll-snap-align: start; 
+            transition: background 0.2s, border 0.2s; 
+        }
+        
+        @media (max-width: 639px) { 
+            .kanban-column { width: calc(100vw - 32px); min-width: calc(100vw - 32px); } 
+        }
+        @media (min-width: 640px) and (max-width: 1023px) { 
+            .kanban-column { width: calc(50vw - 24px); min-width: 280px; } 
+        }
+        @media (min-width: 1024px) { 
+            .kanban-column { flex: 1; min-width: 240px; max-width: 320px; } 
+            .kanban-container { justify-content: center; } 
+        }
+        
+        .filter-pill { transition: all 0.2s; white-space: nowrap; }
+        .filter-pill.active { background: #3b82f6; color: white; box-shadow: 0 2px 8px rgba(59, 130, 246, 0.3); }
+        
+        .column-dots { display: flex; justify-content: center; gap: 6px; padding: 8px 0; }
+        .column-dot { width: 8px; height: 8px; border-radius: 50%; background: #d1d5db; transition: all 0.2s; cursor: pointer; }
+        .column-dot.active { background: #3b82f6; width: 24px; border-radius: 4px; }
+        @media (min-width: 1024px) { .column-dots { display: none; } }
+        
+        .modal-overlay { background: rgba(0,0,0,0.5); backdrop-filter: blur(4px); }
+        .modal-content { animation: slideUp 0.2s ease-out; }
+        @keyframes slideUp { from { transform: translateY(20px); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
+        
+        .comment-item { animation: fadeIn 0.2s ease-out; }
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(-5px); } to { opacity: 1; transform: translateY(0); } }
+        
+        ::-webkit-scrollbar { height: 4px; width: 4px; }
+        ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 4px; }
+        
+        #app { max-width: 100%; margin: 0 auto; }
+        @media (min-width: 1024px) { #app { max-width: 1200px; } }
+        
+        /* Long press indicator */
+        .kanban-card.press-active {
+            transform: scale(0.98);
+            box-shadow: 0 2px 8px rgba(0,0,0,0.15);
+        }
+    </style>
+</head>
+<body class="bg-gray-100">
+    <div id="app" class="bg-white min-h-screen flex flex-col"></div>
+
+    <script>
+        // === STATE ===
+        let activeScreen = 'kanban';
+        let activeRole = 'manager';
+        let activeFilter = 'all';
+        let activeColumnIndex = 0;
+        let selectedCardId = null;
+
+        // Drag state
+        let isDragging = false;
+        let draggedCardId = null;
+        let draggedCardData = null;
+        let sourceColumn = null;
+        let dragClone = null;
+        let dragSourceElement = null;
+
+        // Touch state
+        let touchStartX = 0;
+        let touchStartY = 0;
+        let longPressTimer = null;
+        let touchedCard = null;
+        let isLongPress = false;
+
+        const LONG_PRESS_DURATION = 400; // ms
+        const MOVE_THRESHOLD = 10; // px
+
+        // === DATA ===
+        let kanbanData = {
+            new: [
+                { id: 1, client: 'ООО "Стройка"', type: 'sypuchka', material: 'Щебень 20т', price: '45 000 ₽', address: 'ул. Ленина, 15', status: 'unpaid', phone: '+7 900 123-45-67', comments: [
+                    { author: 'Менеджер', text: 'Клиент просил доставку до 10:00', time: '10:30' },
+                ] },
+                { id: 2, client: 'ИП Сидоров', type: 'tech', material: 'Экскаватор 4ч', price: '28 000 ₽', address: 'Промзона, уч. 8', status: 'unpaid', phone: '+7 900 234-56-78', comments: [] },
+                { id: 7, client: 'ТСЖ "Уютный"', type: 'snow', material: 'Уборка 500м²', price: '12 000 ₽', address: 'ул. Мира, 42', status: 'unpaid', phone: '+7 900 111-22-33', comments: [] },
+            ],
+            inProgress: [
+                { id: 3, client: 'Иванов А.П.', type: 'snow', material: 'Уборка снега', price: '15 000 ₽', address: 'ТЦ "Мега"', status: 'partial', phone: '+7 900 345-67-89', comments: [
+                    { author: 'Водитель', text: 'Выехал на объект', time: '08:15' },
+                    { author: 'Менеджер', text: 'Клиент подтвердил приём', time: '09:40' },
+                ] },
+                { id: 8, client: 'База "Строитель"', type: 'sypuchka', material: 'Песок 40т', price: '62 000 ₽', address: 'Промзона, 12', status: 'partial', phone: '+7 900 222-33-44', comments: [] },
+            ],
+            awaitingPayment: [
+                { id: 4, client: 'ООО "Бетон+"', type: 'sypuchka', material: 'Песок 30т', price: '52 000 ₽', address: 'Новостройки, д.7', status: 'unpaid', daysOverdue: 5, phone: '+7 900 456-78-90', comments: [
+                    { author: 'Бухгалтер', text: 'Выставлен счёт №1234', time: '14:00' },
+                    { author: 'Бухгалтер', text: 'Напомнила об оплате по телефону', time: '16:20' },
+                ] },
+                { id: 9, client: 'Управа района', type: 'snow', material: 'Уборка дворов', price: '85 000 ₽', address: 'Центральный р-н', status: 'unpaid', daysOverdue: 3, phone: '+7 900 333-44-55', comments: [] },
+            ],
+            completed: [
+                { id: 5, client: 'ЖК "Солнечный"', type: 'tech', material: 'Насос 8ч', price: '64 000 ₽', address: 'ЖК Солнечный', status: 'paid', phone: '+7 900 567-89-01', comments: [
+                    { author: 'Менеджер', text: 'Работа выполнена в срок', time: '17:00' },
+                    { author: 'Бухгалтер', text: 'Оплата поступила', time: '18:30' },
+                ] },
+                { id: 6, client: 'Дорстрой', type: 'sypuchka', material: 'Щебень 50т', price: '112 000 ₽', address: 'Трасса М4', status: 'paid', phone: '+7 900 444-55-66', comments: [] },
+            ]
+        };
+
+        const columnKeys = ['new', 'inProgress', 'awaitingPayment', 'completed'];
+
+        // === HELPERS ===
+        const getStatusColor = (status) => ({
+            paid: 'bg-green-100 border-green-400 text-green-800',
+            partial: 'bg-yellow-100 border-yellow-400 text-yellow-800',
+            unpaid: 'bg-red-100 border-red-400 text-red-800'
+        }[status] || 'bg-gray-100 border-gray-400');
+
+        const getTypeIcon = (type) => ({ sypuchka: '🪨', tech: '🚜', snow: '❄️' }[type] || '📦');
+
+        const getFilteredData = (items) => activeFilter === 'all' ? items : items.filter(item => item.type === activeFilter);
+
+        const getColumnCount = (key) => getFilteredData(kanbanData[key]).length;
+
+        const findCard = (cardId) => {
+            for (const key of columnKeys) {
+                const card = kanbanData[key].find(c => c.id === cardId);
+                if (card) return { card, column: key };
+            }
+            return null;
+        };
+
+        const getCurrentTime = () => new Date().toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' });
+
+        const getRoleName = () => ({ manager: 'Менеджер', accountant: 'Бухгалтер', owner: 'Собственник', driver: 'Водитель' }[activeRole] || 'Пользователь');
+
+        // === DRAG & DROP (Desktop) ===
+        window.handleDragStart = (e, cardId, columnKey) => {
+            isDragging = true;
+            draggedCardId = cardId;
+            sourceColumn = columnKey;
+            draggedCardData = kanbanData[columnKey].find(c => c.id === cardId);
+            e.target.classList.add('drag-source');
+            e.dataTransfer.effectAllowed = 'move';
+        };
+
+        window.handleDragEnd = (e) => {
+            e.target.classList.remove('drag-source');
+            document.querySelectorAll('.kanban-column').forEach(col => col.classList.remove('drag-over'));
+            isDragging = false;
+            draggedCardId = null;
+            draggedCardData = null;
+            sourceColumn = null;
+        };
+
+        window.handleDragOver = (e) => { e.preventDefault(); e.dataTransfer.dropEffect = 'move'; };
+        
+        window.handleDragEnter = (e) => { e.preventDefault(); e.currentTarget.classList.add('drag-over'); };
+        
+        window.handleDragLeave = (e) => {
+            if (!e.currentTarget.contains(e.relatedTarget)) e.currentTarget.classList.remove('drag-over');
+        };
+
+        window.handleDrop = (e, targetColumn) => {
+            e.preventDefault();
+            e.currentTarget.classList.remove('drag-over');
+            
+            if (draggedCardId && sourceColumn && sourceColumn !== targetColumn) {
+                kanbanData[sourceColumn] = kanbanData[sourceColumn].filter(c => c.id !== draggedCardId);
+                const statusMap = { 'new': 'unpaid', 'inProgress': 'partial', 'awaitingPayment': 'unpaid', 'completed': 'paid' };
+                draggedCardData.status = statusMap[targetColumn];
+                kanbanData[targetColumn].push(draggedCardData);
+                render();
+            }
+        };
+
+        // === TOUCH HANDLING (Mobile) ===
+        window.handleCardTouchStart = (e, cardId, columnKey) => {
+            const touch = e.touches[0];
+            touchStartX = touch.clientX;
+            touchStartY = touch.clientY;
+            touchedCard = { id: cardId, column: columnKey, element: e.currentTarget };
+            isLongPress = false;
+
+            // Start long press timer
+            longPressTimer = setTimeout(() => {
+                isLongPress = true;
+                startDrag(touch.clientX, touch.clientY);
+            }, LONG_PRESS_DURATION);
+
+            // Visual feedback
+            e.currentTarget.classList.add('press-active');
+        };
+
+        window.handleCardTouchMove = (e) => {
+            if (!touchedCard) return;
+
+            const touch = e.touches[0];
+            const deltaX = Math.abs(touch.clientX - touchStartX);
+            const deltaY = Math.abs(touch.clientY - touchStartY);
+
+            // If moved before long press, cancel drag initiation (allow scroll)
+            if (!isLongPress && (deltaX > MOVE_THRESHOLD || deltaY > MOVE_THRESHOLD)) {
+                cancelLongPress();
+                return;
+            }
+
+            // If dragging, move the clone
+            if (isDragging && dragClone) {
+                e.preventDefault(); // Prevent scroll only when dragging
+                dragClone.style.left = (touch.clientX - dragClone.offsetWidth / 2) + 'px';
+                dragClone.style.top = (touch.clientY - 40) + 'px';
+
+                // Highlight column under touch
+                updateDropTarget(touch.clientX, touch.clientY);
+            }
+        };
+
+        window.handleCardTouchEnd = (e) => {
+            const wasDragging = isDragging;
+            const wasLongPress = isLongPress;
+
+            cancelLongPress();
+
+            if (wasDragging) {
+                // Complete the drag
+                const touch = e.changedTouches[0];
+                completeDrag(touch.clientX, touch.clientY);
+            } else if (!wasLongPress && touchedCard) {
+                // Short tap - open modal
+                openCardModal(touchedCard.id);
+            }
+
+            // Cleanup
+            if (touchedCard?.element) {
+                touchedCard.element.classList.remove('press-active');
+            }
+            touchedCard = null;
+        };
+
+        function startDrag(x, y) {
+            if (!touchedCard) return;
+
+            isDragging = true;
+            draggedCardId = touchedCard.id;
+            sourceColumn = touchedCard.column;
+            draggedCardData = kanbanData[sourceColumn].find(c => c.id === draggedCardId);
+            dragSourceElement = touchedCard.element;
+
+            // Create clone
+            dragClone = dragSourceElement.cloneNode(true);
+            dragClone.classList.add('dragging');
+            dragClone.style.width = dragSourceElement.offsetWidth + 'px';
+            dragClone.style.left = (x - dragSourceElement.offsetWidth / 2) + 'px';
+            dragClone.style.top = (y - 40) + 'px';
+            document.body.appendChild(dragClone);
+
+            // Dim source
+            dragSourceElement.classList.add('drag-source');
+            dragSourceElement.classList.remove('press-active');
+
+            // Haptic feedback if available
+            if (navigator.vibrate) navigator.vibrate(50);
+        }
+
+        function updateDropTarget(x, y) {
+            document.querySelectorAll('.kanban-column').forEach(col => col.classList.remove('drag-over'));
+            
+            const elemBelow = document.elementFromPoint(x, y);
+            const column = elemBelow?.closest('.kanban-column');
+            if (column) column.classList.add('drag-over');
+        }
+
+        function completeDrag(x, y) {
+            if (dragClone) {
+                const elemBelow = document.elementFromPoint(x, y);
+                const column = elemBelow?.closest('.kanban-column');
+
+                if (column) {
+                    const targetColumn = column.dataset.column;
+                    if (targetColumn && sourceColumn !== targetColumn && draggedCardData) {
+                        kanbanData[sourceColumn] = kanbanData[sourceColumn].filter(c => c.id !== draggedCardId);
+                        const statusMap = { 'new': 'unpaid', 'inProgress': 'partial', 'awaitingPayment': 'unpaid', 'completed': 'paid' };
+                        draggedCardData.status = statusMap[targetColumn];
+                        kanbanData[targetColumn].push(draggedCardData);
+                    }
+                }
+
+                dragClone.remove();
+                dragClone = null;
+            }
+
+            if (dragSourceElement) {
+                dragSourceElement.classList.remove('drag-source');
+                dragSourceElement = null;
+            }
+
+            document.querySelectorAll('.kanban-column').forEach(col => col.classList.remove('drag-over'));
+
+            isDragging = false;
+            draggedCardId = null;
+            draggedCardData = null;
+            sourceColumn = null;
+
+            render();
+        }
+
+        function cancelLongPress() {
+            if (longPressTimer) {
+                clearTimeout(longPressTimer);
+                longPressTimer = null;
+            }
+            if (touchedCard?.element) {
+                touchedCard.element.classList.remove('press-active');
+            }
+        }
+
+        // === RENDER FUNCTIONS ===
+        const renderHeader = () => `
+            <div class="bg-gradient-to-r from-blue-500 to-blue-600 text-white p-3 sm:p-4 flex items-center gap-3 shadow-md">
+                <button class="text-xl hover:bg-white/20 rounded-lg p-1 transition">←</button>
+                <div class="flex-1">
+                    <div class="font-semibold text-base sm:text-lg">СтройКонтроль</div>
+                    <div class="text-xs opacity-80">${{manager:'👤 Менеджер',accountant:'📊 Бухгалтер',owner:'👑 Собственник',driver:'🚛 Водитель'}[activeRole]}</div>
+                </div>
+                <button class="text-xl hover:bg-white/20 rounded-lg p-2 transition">⋮</button>
+            </div>
+        `;
+
+        const renderRoleSwitcher = () => `
+            <div class="bg-gray-50 p-2 flex gap-1 text-xs border-b overflow-x-auto">
+                ${['manager', 'accountant', 'owner', 'driver'].map(role => `
+                    <button onclick="setRole('${role}')" class="px-2 sm:px-3 py-1.5 rounded-lg transition font-medium whitespace-nowrap ${activeRole === role ? 'bg-blue-500 text-white shadow' : 'bg-white hover:bg-gray-100'}">
+                        ${{manager:'Менеджер',accountant:'Бухгалтер',owner:'Собственник',driver:'Водитель'}[role]}
+                    </button>
+                `).join('')}
+            </div>
+        `;
+
+        const renderKanbanCard = (item, columnKey) => `
+            <div class="kanban-card p-3 rounded-xl border-l-4 mb-2 bg-white shadow-sm ${getStatusColor(item.status)}"
+                 draggable="true"
+                 ondragstart="handleDragStart(event, ${item.id}, '${columnKey}')"
+                 ondragend="handleDragEnd(event)"
+                 ontouchstart="handleCardTouchStart(event, ${item.id}, '${columnKey}')"
+                 ontouchmove="handleCardTouchMove(event)"
+                 ontouchend="handleCardTouchEnd(event)"
+                 data-card-id="${item.id}">
+                <div class="flex items-start justify-between">
+                    <div class="font-medium text-sm">${item.client}</div>
+                    <span class="text-lg">${getTypeIcon(item.type)}</span>
+                </div>
+                <div class="text-xs text-gray-600 mt-1">${item.material}</div>
+                <div class="text-sm font-bold mt-2">${item.price}</div>
+                <div class="text-xs text-gray-500 mt-1 flex items-center gap-1">
+                    📍 ${item.address.length > 20 ? item.address.substring(0, 20) + '...' : item.address}
+                </div>
+                ${item.daysOverdue ? `<div class="text-xs text-red-600 mt-1 font-medium">⚠️ Просрочка ${item.daysOverdue} дн.</div>` : ''}
+                ${item.comments?.length ? `<div class="text-xs text-blue-500 mt-2 flex items-center gap-1">💬 ${item.comments.length}</div>` : ''}
+            </div>
+        `;
+
+        const renderFilters = () => `
+            <div class="flex gap-2 mb-4 overflow-x-auto pb-2 px-1">
+                ${[
+                    { key: 'all', label: 'Все', count: Object.values(kanbanData).flat().length },
+                    { key: 'sypuchka', label: '🪨 Сыпучка', count: Object.values(kanbanData).flat().filter(i => i.type === 'sypuchka').length },
+                    { key: 'tech', label: '🚜 Техника', count: Object.values(kanbanData).flat().filter(i => i.type === 'tech').length },
+                    { key: 'snow', label: '❄️ Снег', count: Object.values(kanbanData).flat().filter(i => i.type === 'snow').length },
+                ].map(f => `
+                    <button onclick="setFilter('${f.key}')" class="filter-pill px-4 py-2 rounded-full text-sm font-medium shadow-sm ${activeFilter === f.key ? 'active' : 'bg-white hover:bg-gray-50'}">
+                        ${f.label} <span class="ml-1 opacity-70">${f.count}</span>
+                    </button>
+                `).join('')}
+            </div>
+        `;
+
+        const renderColumnDots = () => `
+            <div class="column-dots">
+                ${columnKeys.map((_, i) => `<div class="column-dot ${i === activeColumnIndex ? 'active' : ''}" onclick="scrollToColumn(${i})"></div>`).join('')}
+            </div>
+        `;
+
+        const renderKanban = () => `
+            <div class="p-3 sm:p-4">
+                ${renderFilters()}
+                <div class="kanban-container" id="kanbanContainer" onscroll="handleKanbanScroll()">
+                    ${[
+                        { key: 'new', title: '📥 Новая', bg: 'bg-gray-50' },
+                        { key: 'inProgress', title: '🔄 В работе', bg: 'bg-blue-50' },
+                        { key: 'awaitingPayment', title: '💰 Оплата', bg: 'bg-yellow-50' },
+                        { key: 'completed', title: '✅ Готово', bg: 'bg-green-50' }
+                    ].map(col => `
+                        <div class="kanban-column ${col.bg} rounded-xl p-3" data-column="${col.key}"
+                             ondragover="handleDragOver(event)" ondragenter="handleDragEnter(event)"
+                             ondragleave="handleDragLeave(event)" ondrop="handleDrop(event, '${col.key}')">
+                            <div class="flex items-center justify-between mb-3">
+                                <span class="font-semibold text-sm">${col.title}</span>
+                                <span class="bg-white px-2 py-0.5 rounded-full text-xs font-medium shadow-sm">${getColumnCount(col.key)}</span>
+                            </div>
+                            <div class="min-h-[200px]">
+                                ${getFilteredData(kanbanData[col.key]).map(item => renderKanbanCard(item, col.key)).join('')}
+                                ${col.key === 'new' ? `<button onclick="setScreen('create')" class="w-full py-3 border-2 border-dashed border-gray-300 rounded-xl text-gray-400 text-sm hover:border-blue-400 hover:text-blue-400 transition">+ Добавить</button>` : ''}
+                            </div>
+                        </div>
+                    `).join('')}
+                </div>
+                ${renderColumnDots()}
+                <div class="text-center text-xs text-gray-400 mt-2 lg:hidden">
+                    Тап — открыть • Зажать — перетащить
+                </div>
+            </div>
+        `;
+
+        const renderCardModal = () => {
+            if (!selectedCardId) return '';
+            const result = findCard(selectedCardId);
+            if (!result) return '';
+            const { card } = result;
+            
+            return `
+                <div class="fixed inset-0 z-50 flex items-end sm:items-center justify-center modal-overlay" onclick="closeCardModal(event)">
+                    <div class="modal-content bg-white w-full sm:w-[480px] sm:max-w-[90vw] max-h-[85vh] rounded-t-2xl sm:rounded-2xl shadow-xl flex flex-col" onclick="event.stopPropagation()">
+                        <div class="p-4 border-b flex items-start justify-between">
+                            <div class="flex-1">
+                                <div class="flex items-center gap-2">
+                                    <span class="text-2xl">${getTypeIcon(card.type)}</span>
+                                    <span class="font-bold text-lg">${card.client}</span>
+                                </div>
+                                <div class="text-sm text-gray-600 mt-1">${card.material}</div>
+                            </div>
+                            <button onclick="closeCardModal()" class="text-gray-400 hover:text-gray-600 text-2xl leading-none p-1">&times;</button>
+                        </div>
+                        
+                        <div class="p-4 border-b">
+                            <div class="grid grid-cols-2 gap-3 text-sm">
+                                <div>
+                                    <div class="text-gray-500">Сумма</div>
+                                    <div class="font-bold text-lg">${card.price}</div>
+                                </div>
+                                <div>
+                                    <div class="text-gray-500">Статус</div>
+                                    <div class="inline-block px-2 py-1 rounded-full text-xs font-medium ${getStatusColor(card.status)}">
+                                        ${{paid:'Оплачено',partial:'Частично',unpaid:'Не оплачено'}[card.status]}
+                                    </div>
+                                </div>
+                                <div class="col-span-2">
+                                    <div class="text-gray-500">Адрес</div>
+                                    <div class="flex items-center gap-2">
+                                        <span>${card.address}</span>
+                                        <button class="text-blue-500 text-xs">📍 Карта</button>
+                                    </div>
+                                </div>
+                                <div class="col-span-2">
+                                    <div class="text-gray-500">Телефон</div>
+                                    <a href="tel:${card.phone}" class="text-blue-500">${card.phone}</a>
+                                </div>
+                            </div>
+                        </div>
+                        
+                        <div class="flex-1 overflow-auto p-4">
+                            <div class="font-medium mb-3 flex items-center gap-2">
+                                💬 Комментарии
+                                <span class="text-xs text-gray-400">${card.comments?.length || 0}</span>
+                            </div>
+                            
+                            <div class="space-y-3 mb-4" id="commentsContainer">
+                                ${card.comments?.length ? card.comments.map(c => `
+                                    <div class="comment-item bg-gray-50 rounded-lg p-3">
+                                        <div class="flex items-center justify-between mb-1">
+                                            <span class="font-medium text-sm">${c.author}</span>
+                                            <span class="text-xs text-gray-400">${c.time}</span>
+                                        </div>
+                                        <div class="text-sm text-gray-700">${c.text}</div>
+                                    </div>
+                                `).join('') : `
+                                    <div class="text-center text-gray-400 text-sm py-4">Комментариев пока нет</div>
+                                `}
+                            </div>
+                        </div>
+                        
+                        <div class="p-4 border-t bg-gray-50">
+                            <div class="flex gap-2">
+                                <input type="text" id="commentInput" 
+                                       class="flex-1 px-3 py-2 border rounded-xl text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none"
+                                       placeholder="Написать комментарий..."
+                                       onkeypress="if(event.key==='Enter')addComment()">
+                                <button onclick="addComment()" class="px-4 py-2 bg-blue-500 text-white rounded-xl text-sm font-medium hover:bg-blue-600 transition">→</button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            `;
+        };
+
+        const renderCreateForm = () => `
+            <div class="p-3 sm:p-4">
+                <div class="text-lg sm:text-xl font-bold mb-4">Новая заявка</div>
+                <div class="mb-5">
+                    <div class="text-sm text-gray-600 mb-2 font-medium">Категория</div>
+                    <div class="flex gap-2">
+                        <button class="flex-1 py-3 bg-blue-500 text-white rounded-xl text-sm font-medium shadow-sm">🪨 Сыпучка</button>
+                        <button class="flex-1 py-3 bg-white rounded-xl text-sm shadow-sm hover:bg-gray-50 border">🚜 Техника</button>
+                        <button class="flex-1 py-3 bg-white rounded-xl text-sm shadow-sm hover:bg-gray-50 border">❄️ Снег</button>
+                    </div>
+                </div>
+                <div class="space-y-4">
+                    <div>
+                        <label class="text-sm text-gray-600 font-medium">Клиент / Контакт</label>
+                        <input type="text" class="w-full p-3 border rounded-xl mt-1 focus:ring-2 focus:ring-blue-500 outline-none" placeholder="ООО или ФИО + телефон">
+                    </div>
+                    <div>
+                        <label class="text-sm text-gray-600 font-medium">Адрес доставки</label>
+                        <div class="flex gap-2 mt-1">
+                            <input type="text" class="flex-1 p-3 border rounded-xl focus:ring-2 focus:ring-blue-500 outline-none" placeholder="ул. Примерная, д. 1">
+                            <button class="px-4 bg-gray-100 rounded-xl hover:bg-gray-200 transition text-xl">📍</button>
+                        </div>
+                    </div>
+                    <div class="flex gap-3">
+                        <div class="flex-1">
+                            <label class="text-sm text-gray-600 font-medium">Материал</label>
+                            <select class="w-full p-3 border rounded-xl mt-1 bg-white focus:ring-2 focus:ring-blue-500 outline-none">
+                                <option>Щебень 5-20</option><option>Щебень 20-40</option><option>Песок карьерный</option>
+                            </select>
+                        </div>
+                        <div class="w-24">
+                            <label class="text-sm text-gray-600 font-medium">Объём</label>
+                            <input type="text" class="w-full p-3 border rounded-xl mt-1 focus:ring-2 focus:ring-blue-500 outline-none" placeholder="20т">
+                        </div>
+                    </div>
+                    <div class="flex gap-3">
+                        <div class="flex-1">
+                            <label class="text-sm text-gray-600 font-medium">Цена, ₽</label>
+                            <input type="text" class="w-full p-3 border rounded-xl mt-1 focus:ring-2 focus:ring-blue-500 outline-none" placeholder="45 000">
+                        </div>
+                        <div class="flex-1">
+                            <label class="text-sm text-gray-600 font-medium">Оплата</label>
+                            <select class="w-full p-3 border rounded-xl mt-1 bg-white focus:ring-2 focus:ring-blue-500 outline-none">
+                                <option>Наличные</option><option>Безнал</option><option>Карта</option>
+                            </select>
+                        </div>
+                    </div>
+                    <div>
+                        <label class="text-sm text-gray-600 font-medium">Комментарий</label>
+                        <textarea class="w-full p-3 border rounded-xl mt-1 focus:ring-2 focus:ring-blue-500 outline-none resize-none" rows="2" placeholder="Доп. информация..."></textarea>
+                    </div>
+                </div>
+                <button class="w-full mt-6 py-4 bg-blue-500 text-white rounded-xl font-semibold shadow-md hover:bg-blue-600 transition">Создать заявку</button>
+            </div>
+        `;
+
+        const renderDriverScreen = () => `
+            <div class="p-3 sm:p-4">
+                <div class="flex items-center justify-between mb-5">
+                    <div>
+                        <div class="text-lg sm:text-xl font-bold">Мои задачи</div>
+                        <div class="text-sm text-gray-500">Сегодня, 18 декабря</div>
+                    </div>
+                    <div class="text-right bg-blue-50 rounded-xl p-3">
+                        <div class="text-2xl">🚛</div>
+                        <div class="text-xs text-blue-600 font-medium">КАМАЗ-001</div>
+                    </div>
+                </div>
+                <div class="space-y-3">
+                    ${[
+                        { client: 'ООО "Стройка"', material: 'Щебень 20т', time: '08:00', address: 'ул. Ленина, 15', status: 'done' },
+                        { client: 'ИП Сидоров', material: 'Песок 15т', time: '12:00', address: 'Промзона, уч. 8', status: 'current' },
+                        { client: 'ЖК "Солнечный"', material: 'Щебень 25т', time: '15:00', address: 'ЖК Солнечный', status: 'pending' },
+                    ].map(task => `
+                        <div class="${task.status === 'done' ? 'bg-green-50 border-green-200' : task.status === 'current' ? 'bg-blue-50 border-2 border-blue-400' : 'bg-white border-gray-200'} border rounded-xl p-4">
+                            <div class="flex justify-between items-start">
+                                <div>
+                                    <div class="text-xs font-semibold ${task.status === 'done' ? 'text-green-600' : task.status === 'current' ? 'text-blue-600' : 'text-gray-400'}">
+                                        ${task.status === 'done' ? '✓ ВЫПОЛНЕНО' : task.status === 'current' ? '● ТЕКУЩАЯ' : 'СЛЕДУЮЩАЯ'}
+                                    </div>
+                                    <div class="font-semibold mt-1">${task.client}</div>
+                                    <div class="text-sm text-gray-600">${task.material}</div>
+                                </div>
+                                <div class="text-lg font-bold ${task.status === 'current' ? 'text-blue-600' : ''}">${task.time}</div>
+                            </div>
+                            <div class="mt-3 text-sm text-gray-500">📍 ${task.address}</div>
+                            ${task.status === 'current' ? `<button class="w-full mt-3 py-3 bg-blue-500 text-white rounded-xl text-sm font-medium">🗺️ Открыть в навигаторе</button>` : ''}
+                        </div>
+                    `).join('')}
+                </div>
+            </div>
+        `;
+
+        const renderDebtors = () => `
+            <div class="p-3 sm:p-4">
+                <div class="bg-gradient-to-r from-red-500 to-red-600 text-white rounded-xl p-4 mb-4 shadow-md">
+                    <div class="text-sm opacity-90">Общая задолженность</div>
+                    <div class="text-2xl font-bold mt-1">263 500 ₽</div>
+                    <div class="text-xs opacity-75 mt-1">7 неоплаченных сделок</div>
+                </div>
+                <div class="space-y-3">
+                    ${[
+                        { client: 'ООО "Бетон+"', total: '152 000 ₽', overdue: '12 дней', deals: 3 },
+                        { client: 'ИП Петров', total: '45 000 ₽', overdue: '8 дней', deals: 1 },
+                        { client: 'Стройсервис', total: '38 500 ₽', overdue: '5 дней', deals: 2 },
+                    ].map(d => `
+                        <div class="bg-white border border-red-100 rounded-xl p-4 flex justify-between items-center shadow-sm">
+                            <div>
+                                <div class="font-semibold">${d.client}</div>
+                                <div class="text-xs text-gray-500">${d.deals} сделок • Просрочка ${d.overdue}</div>
+                            </div>
+                            <div class="font-bold text-red-600">${d.total}</div>
+                        </div>
+                    `).join('')}
+                </div>
+            </div>
+        `;
+
+        const renderBottomNav = () => {
+            if (activeRole === 'driver') return '';
+            const items = [
+                { key: 'kanban', icon: '📋', label: 'Заявки' },
+                { key: 'schedule', icon: '📅', label: 'График' },
+                { key: 'create', icon: '➕', label: 'Создать' },
+            ];
+            if (activeRole === 'accountant' || activeRole === 'owner') items.push({ key: 'debtors', icon: '💰', label: 'Долги' });
+            
+            return `
+                <div class="bg-white border-t flex">
+                    ${items.map(item => `
+                        <button onclick="setScreen('${item.key}')" class="flex-1 py-3 text-center ${activeScreen === item.key ? 'text-blue-500' : 'text-gray-400'}">
+                            <div class="text-xl">${item.icon}</div>
+                            <div class="text-xs font-medium">${item.label}</div>
+                        </button>
+                    `).join('')}
+                </div>
+            `;
+        };
+
+        const renderContent = () => {
+            if (activeRole === 'driver') return renderDriverScreen();
+            switch(activeScreen) {
+                case 'kanban': return renderKanban();
+                case 'debtors': return renderDebtors();
+                case 'create': return renderCreateForm();
+                default: return renderKanban();
+            }
+        };
+
+        const render = () => {
+            document.getElementById('app').innerHTML = `
+                ${renderHeader()}
+                ${renderRoleSwitcher()}
+                <div class="flex-1 overflow-auto bg-gray-50">${renderContent()}</div>
+                ${renderBottomNav()}
+                ${renderCardModal()}
+            `;
+        };
+
+        // === EVENT HANDLERS ===
+        window.setScreen = (screen) => { activeScreen = screen; render(); };
+        window.setRole = (role) => { 
+            activeRole = role; 
+            if (role === 'driver') activeScreen = 'driver'; 
+            else if (activeScreen === 'driver') activeScreen = 'kanban'; 
+            render(); 
+        };
+        window.setFilter = (filter) => { activeFilter = filter; render(); };
+        
+        window.scrollToColumn = (index) => {
+            const container = document.getElementById('kanbanContainer');
+            const columns = container?.querySelectorAll('.kanban-column');
+            if (columns?.[index]) { 
+                columns[index].scrollIntoView({ behavior: 'smooth', inline: 'start' }); 
+                activeColumnIndex = index; 
+                updateColumnDots(); 
+            }
+        };
+
+        window.handleKanbanScroll = () => {
+            const container = document.getElementById('kanbanContainer');
+            const columnWidth = container?.querySelector('.kanban-column')?.offsetWidth || 0;
+            if (columnWidth) {
+                activeColumnIndex = Math.round(container.scrollLeft / columnWidth);
+                updateColumnDots();
+            }
+        };
+
+        const updateColumnDots = () => {
+            document.querySelectorAll('.column-dot').forEach((dot, i) => dot.classList.toggle('active', i === activeColumnIndex));
+        };
+
+        window.openCardModal = (cardId) => { selectedCardId = cardId; render(); };
+        
+        window.closeCardModal = (e) => {
+            if (e && e.target !== e.currentTarget) return;
+            selectedCardId = null;
+            render();
+        };
+
+        window.addComment = () => {
+            const input = document.getElementById('commentInput');
+            const text = input?.value?.trim();
+            if (!text || !selectedCardId) return;
+            
+            const result = findCard(selectedCardId);
+            if (result) {
+                if (!result.card.comments) result.card.comments = [];
+                result.card.comments.push({ author: getRoleName(), text, time: getCurrentTime() });
+                render();
+                setTimeout(() => {
+                    const container = document.getElementById('commentsContainer');
+                    if (container) container.scrollTop = container.scrollHeight;
+                }, 50);
+            }
+        };
+
+        // Init
+        render();
+    </script>
+</body>
+</html>
