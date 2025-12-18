@@ -255,17 +255,23 @@
         window.handleCardTouchEnd = (e) => {
             const wasDragging = isDragging;
             const wasLongPress = isLongPress;
+            const touch = e.changedTouches[0];
+            
+            // Calculate total movement
+            const deltaX = Math.abs(touch.clientX - touchStartX);
+            const deltaY = Math.abs(touch.clientY - touchStartY);
+            const didMove = deltaX > MOVE_THRESHOLD || deltaY > MOVE_THRESHOLD;
 
             cancelLongPress();
 
             if (wasDragging) {
                 // Complete the drag
-                const touch = e.changedTouches[0];
                 completeDrag(touch.clientX, touch.clientY);
-            } else if (!wasLongPress && touchedCard) {
-                // Short tap - open modal
+            } else if (!wasLongPress && !didMove && touchedCard) {
+                // Short tap without movement - open modal
                 openCardModal(touchedCard.id);
             }
+            // If didMove but not dragging = was scrolling, do nothing
 
             // Cleanup
             if (touchedCard?.element) {
@@ -622,6 +628,88 @@
             </div>
         `;
 
+        const resources = [
+            { id: 1, name: 'Экскаватор JCB', icon: '🚜' },
+            { id: 2, name: 'Экскаватор CAT', icon: '🚜' },
+            { id: 3, name: 'Насос бетона №1', icon: '🔧' },
+            { id: 4, name: 'Насос бетона №2', icon: '🔧' },
+            { id: 5, name: 'КАМАЗ-001', icon: '🚛' },
+            { id: 6, name: 'КАМАЗ-002', icon: '🚛' },
+        ];
+
+        const timeSlots = ['08:00', '10:00', '12:00', '14:00', '16:00', '18:00'];
+        
+        const bookings = [
+            { resourceId: 1, start: 0, duration: 2, client: 'Иванов', status: 'unpaid' },
+            { resourceId: 3, start: 2, duration: 3, client: 'Бетон+', status: 'paid' },
+            { resourceId: 5, start: 1, duration: 2, client: 'Стройка', status: 'partial' },
+            { resourceId: 2, start: 3, duration: 2, client: 'ЖК Солнечный', status: 'paid' },
+            { resourceId: 6, start: 0, duration: 1, client: 'Петров', status: 'unpaid' },
+            { resourceId: 4, start: 4, duration: 2, client: 'Фасад', status: 'partial' },
+        ];
+
+        const getStatusBg = (status) => ({
+            paid: 'bg-green-500', partial: 'bg-yellow-500', unpaid: 'bg-red-500'
+        }[status] || 'bg-gray-500');
+
+        const renderSchedule = () => `
+            <div class="p-3 sm:p-4">
+                <div class="flex items-center justify-between mb-4">
+                    <button class="p-2 bg-white rounded-lg shadow-sm hover:bg-gray-50 transition">←</button>
+                    <div class="text-center">
+                        <div class="font-bold">Сегодня, 18 декабря</div>
+                        <div class="text-xs text-gray-500">Четверг</div>
+                    </div>
+                    <button class="p-2 bg-white rounded-lg shadow-sm hover:bg-gray-50 transition">→</button>
+                </div>
+
+                <div class="flex gap-4 mb-4 text-xs justify-center flex-wrap">
+                    <span class="flex items-center gap-1"><span class="w-3 h-3 bg-green-500 rounded-sm"></span> Оплачено</span>
+                    <span class="flex items-center gap-1"><span class="w-3 h-3 bg-yellow-500 rounded-sm"></span> Частично</span>
+                    <span class="flex items-center gap-1"><span class="w-3 h-3 bg-red-500 rounded-sm"></span> Не оплачено</span>
+                </div>
+
+                <div class="overflow-x-auto rounded-xl border bg-white shadow-sm">
+                    <div style="min-width: 520px">
+                        <div class="flex border-b bg-gray-50">
+                            <div class="w-28 sm:w-32 p-2 sm:p-3 font-medium text-xs text-gray-600">Ресурс</div>
+                            ${timeSlots.map(time => `
+                                <div class="flex-1 p-2 sm:p-3 text-center text-xs font-medium border-l text-gray-600">${time}</div>
+                            `).join('')}
+                        </div>
+
+                        ${resources.map(resource => `
+                            <div class="flex border-b last:border-b-0 relative" style="height: 48px">
+                                <div class="w-28 sm:w-32 p-2 bg-gray-50 text-xs flex items-center gap-1 border-r">
+                                    <span>${resource.icon}</span>
+                                    <span class="truncate font-medium">${resource.name}</span>
+                                </div>
+                                <div class="flex-1 relative">
+                                    <div class="absolute inset-0 flex">
+                                        ${timeSlots.map(() => `
+                                            <div class="flex-1 border-l border-gray-100 hover:bg-blue-50 cursor-pointer"></div>
+                                        `).join('')}
+                                    </div>
+                                    ${bookings
+                                        .filter(b => b.resourceId === resource.id)
+                                        .map(booking => `
+                                            <div class="absolute top-1 bottom-1 rounded-lg ${getStatusBg(booking.status)} text-white text-xs flex items-center justify-center px-2 font-medium shadow-sm cursor-pointer hover:opacity-90"
+                                                 style="left: calc(${(booking.start / timeSlots.length) * 100}% + 2px); width: calc(${(booking.duration / timeSlots.length) * 100}% - 4px)">
+                                                ${booking.client}
+                                            </div>
+                                        `).join('')}
+                                </div>
+                            </div>
+                        `).join('')}
+                    </div>
+                </div>
+
+                <button onclick="setScreen('create')" class="fixed bottom-24 right-4 w-14 h-14 bg-blue-500 text-white rounded-full shadow-lg text-2xl hover:bg-blue-600 transition active:scale-95 z-10">
+                    +
+                </button>
+            </div>
+        `;
+
         const renderDebtors = () => `
             <div class="p-3 sm:p-4">
                 <div class="bg-gradient-to-r from-red-500 to-red-600 text-white rounded-xl p-4 mb-4 shadow-md">
@@ -672,6 +760,7 @@
             if (activeRole === 'driver') return renderDriverScreen();
             switch(activeScreen) {
                 case 'kanban': return renderKanban();
+                case 'schedule': return renderSchedule();
                 case 'debtors': return renderDebtors();
                 case 'create': return renderCreateForm();
                 default: return renderKanban();
