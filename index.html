@@ -1,0 +1,864 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>СтройКонтроль — Демо CRM</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    screens: {
+                        'xs': '375px',
+                    }
+                }
+            }
+        }
+    </script>
+    <style>
+        * { 
+            -webkit-tap-highlight-color: transparent; 
+            box-sizing: border-box;
+        }
+        body { 
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; 
+            overflow: hidden;
+        }
+        
+        /* Drag and drop styles */
+        .kanban-card { 
+            transition: transform 0.15s, box-shadow 0.15s, opacity 0.15s;
+            touch-action: none;
+            user-select: none;
+        }
+        .kanban-card:active { 
+            transform: scale(0.98); 
+        }
+        .kanban-card.dragging {
+            opacity: 0.8;
+            transform: scale(1.02) rotate(2deg);
+            box-shadow: 0 10px 30px rgba(0,0,0,0.2);
+            z-index: 1000;
+        }
+        .kanban-column.drag-over {
+            background: rgba(59, 130, 246, 0.1) !important;
+            border: 2px dashed #3b82f6;
+        }
+        .drop-placeholder {
+            border: 2px dashed #3b82f6;
+            background: rgba(59, 130, 246, 0.05);
+            border-radius: 12px;
+            margin-bottom: 8px;
+            transition: height 0.2s;
+        }
+        
+        /* Responsive kanban */
+        .kanban-container {
+            display: flex;
+            gap: 12px;
+            overflow-x: auto;
+            padding-bottom: 16px;
+            scroll-snap-type: x mandatory;
+            -webkit-overflow-scrolling: touch;
+        }
+        .kanban-column {
+            flex: 0 0 auto;
+            scroll-snap-align: start;
+            transition: background 0.2s, border 0.2s;
+        }
+        
+        /* Mobile: full width columns */
+        @media (max-width: 639px) {
+            .kanban-column {
+                width: calc(100vw - 32px);
+                min-width: calc(100vw - 32px);
+            }
+        }
+        
+        /* Tablet: 2 columns visible */
+        @media (min-width: 640px) and (max-width: 1023px) {
+            .kanban-column {
+                width: calc(50vw - 24px);
+                min-width: 280px;
+            }
+        }
+        
+        /* Desktop: all columns visible */
+        @media (min-width: 1024px) {
+            .kanban-column {
+                flex: 1;
+                min-width: 240px;
+                max-width: 320px;
+            }
+            .kanban-container {
+                justify-content: center;
+            }
+        }
+        
+        .booking-block { transition: opacity 0.2s; }
+        .booking-block:hover { opacity: 0.9; }
+        .nav-btn { transition: all 0.2s; }
+        .nav-btn:active { transform: scale(0.95); }
+        .time-cell:hover { background: rgba(59, 130, 246, 0.1); }
+        
+        ::-webkit-scrollbar { height: 4px; width: 4px; }
+        ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 4px; }
+        
+        /* Filter pills */
+        .filter-pill {
+            transition: all 0.2s;
+            white-space: nowrap;
+        }
+        .filter-pill.active {
+            background: #3b82f6;
+            color: white;
+            box-shadow: 0 2px 8px rgba(59, 130, 246, 0.3);
+        }
+        
+        /* Column indicators for mobile */
+        .column-dots {
+            display: flex;
+            justify-content: center;
+            gap: 6px;
+            padding: 8px 0;
+        }
+        .column-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: #d1d5db;
+            transition: all 0.2s;
+        }
+        .column-dot.active {
+            background: #3b82f6;
+            width: 24px;
+            border-radius: 4px;
+        }
+        
+        @media (min-width: 1024px) {
+            .column-dots { display: none; }
+        }
+        
+        /* Main container responsive */
+        #app {
+            max-width: 100%;
+            margin: 0 auto;
+        }
+        @media (min-width: 1024px) {
+            #app {
+                max-width: 1200px;
+            }
+        }
+    </style>
+</head>
+<body class="bg-gray-100">
+    <div id="app" class="bg-white min-h-screen flex flex-col"></div>
+
+    <script>
+        // State
+        let activeScreen = 'kanban';
+        let activeRole = 'manager';
+        let activeFilter = 'all';
+        let activeColumnIndex = 0;
+        let draggedCard = null;
+        let draggedCardData = null;
+        let sourceColumn = null;
+
+        // Data - mutable for drag and drop
+        let kanbanData = {
+            new: [
+                { id: 1, client: 'ООО "Стройка"', type: 'sypuchka', material: 'Щебень 20т', price: '45 000 ₽', address: 'ул. Ленина, 15', status: 'unpaid', phone: '+7 900 123-45-67' },
+                { id: 2, client: 'ИП Сидоров', type: 'tech', material: 'Экскаватор 4ч', price: '28 000 ₽', address: 'Промзона, уч. 8', status: 'unpaid', phone: '+7 900 234-56-78' },
+                { id: 7, client: 'ТСЖ "Уютный"', type: 'snow', material: 'Уборка 500м²', price: '12 000 ₽', address: 'ул. Мира, 42', status: 'unpaid', phone: '+7 900 111-22-33' },
+            ],
+            inProgress: [
+                { id: 3, client: 'Иванов А.П.', type: 'snow', material: 'Уборка снега', price: '15 000 ₽', address: 'ТЦ "Мега"', status: 'partial', phone: '+7 900 345-67-89' },
+                { id: 8, client: 'База "Строитель"', type: 'sypuchka', material: 'Песок 40т', price: '62 000 ₽', address: 'Промзона, 12', status: 'partial', phone: '+7 900 222-33-44' },
+            ],
+            awaitingPayment: [
+                { id: 4, client: 'ООО "Бетон+"', type: 'sypuchka', material: 'Песок 30т', price: '52 000 ₽', address: 'Новостройки, д.7', status: 'unpaid', daysOverdue: 5, phone: '+7 900 456-78-90' },
+                { id: 9, client: 'Управа района', type: 'snow', material: 'Уборка дворов', price: '85 000 ₽', address: 'Центральный р-н', status: 'unpaid', daysOverdue: 3, phone: '+7 900 333-44-55' },
+            ],
+            completed: [
+                { id: 5, client: 'ЖК "Солнечный"', type: 'tech', material: 'Насос 8ч', price: '64 000 ₽', address: 'ЖК Солнечный', status: 'paid', phone: '+7 900 567-89-01' },
+                { id: 6, client: 'Дорстрой', type: 'sypuchka', material: 'Щебень 50т', price: '112 000 ₽', address: 'Трасса М4', status: 'paid', phone: '+7 900 444-55-66' },
+            ]
+        };
+
+        const resources = [
+            { id: 1, name: 'Экскаватор JCB', type: 'excavator', icon: '🚜' },
+            { id: 2, name: 'Экскаватор CAT', type: 'excavator', icon: '🚜' },
+            { id: 3, name: 'Насос бетона №1', type: 'pump', icon: '🔧' },
+            { id: 4, name: 'Насос бетона №2', type: 'pump', icon: '🔧' },
+            { id: 5, name: 'КАМАЗ-001', type: 'truck', icon: '🚛' },
+            { id: 6, name: 'КАМАЗ-002', type: 'truck', icon: '🚛' },
+        ];
+
+        const timeSlots = ['08:00', '10:00', '12:00', '14:00', '16:00', '18:00'];
+        
+        const bookings = [
+            { resourceId: 1, start: 0, duration: 2, client: 'Иванов', status: 'unpaid' },
+            { resourceId: 3, start: 2, duration: 3, client: 'ООО Бетон+', status: 'paid' },
+            { resourceId: 5, start: 1, duration: 2, client: 'Стройка', status: 'partial' },
+            { resourceId: 2, start: 3, duration: 2, client: 'ЖК Солнечный', status: 'paid' },
+            { resourceId: 6, start: 0, duration: 1, client: 'ИП Петров', status: 'unpaid' },
+            { resourceId: 4, start: 4, duration: 2, client: 'Фасад', status: 'partial' },
+        ];
+
+        const debtors = [
+            { client: 'ООО "Бетон+"', total: '152 000 ₽', overdue: '12 дней', deals: 3 },
+            { client: 'ИП Петров', total: '45 000 ₽', overdue: '8 дней', deals: 1 },
+            { client: 'Стройсервис', total: '38 500 ₽', overdue: '5 дней', deals: 2 },
+            { client: 'ООО "Фасад"', total: '28 000 ₽', overdue: '3 дня', deals: 1 },
+        ];
+
+        const driverTasks = [
+            { id: 1, client: 'ООО "Стройка"', material: 'Щебень 20т', time: '08:00', address: 'ул. Ленина, 15', status: 'done' },
+            { id: 2, client: 'ИП Сидоров', material: 'Песок 15т', time: '12:00', address: 'Промзона, участок 8', status: 'current' },
+            { id: 3, client: 'ЖК "Солнечный"', material: 'Щебень 25т', time: '15:00', address: 'ЖК Солнечный, корп. 3', status: 'pending' },
+        ];
+
+        const columnKeys = ['new', 'inProgress', 'awaitingPayment', 'completed'];
+
+        // Helpers
+        const getStatusColor = (status) => ({
+            paid: 'bg-green-100 border-green-400 text-green-800',
+            partial: 'bg-yellow-100 border-yellow-400 text-yellow-800',
+            unpaid: 'bg-red-100 border-red-400 text-red-800'
+        }[status] || 'bg-gray-100 border-gray-400');
+
+        const getStatusBg = (status) => ({
+            paid: 'bg-green-500',
+            partial: 'bg-yellow-500',
+            unpaid: 'bg-red-500'
+        }[status] || 'bg-gray-500');
+
+        const getTypeIcon = (type) => ({
+            sypuchka: '🪨',
+            tech: '🚜',
+            snow: '❄️'
+        }[type] || '📦');
+
+        const getFilteredData = (items) => {
+            if (activeFilter === 'all') return items;
+            return items.filter(item => item.type === activeFilter);
+        };
+
+        const getColumnCount = (key) => {
+            return getFilteredData(kanbanData[key]).length;
+        };
+
+        // Drag and drop handlers
+        const handleDragStart = (e, cardId, columnKey) => {
+            draggedCard = cardId;
+            sourceColumn = columnKey;
+            draggedCardData = kanbanData[columnKey].find(c => c.id === cardId);
+            
+            e.target.classList.add('dragging');
+            e.dataTransfer.effectAllowed = 'move';
+            e.dataTransfer.setData('text/plain', cardId);
+        };
+
+        const handleDragEnd = (e) => {
+            e.target.classList.remove('dragging');
+            document.querySelectorAll('.kanban-column').forEach(col => {
+                col.classList.remove('drag-over');
+            });
+            document.querySelectorAll('.drop-placeholder').forEach(el => el.remove());
+            draggedCard = null;
+            draggedCardData = null;
+            sourceColumn = null;
+        };
+
+        const handleDragOver = (e) => {
+            e.preventDefault();
+            e.dataTransfer.dropEffect = 'move';
+        };
+
+        const handleDragEnter = (e, columnKey) => {
+            e.preventDefault();
+            const column = e.currentTarget;
+            column.classList.add('drag-over');
+        };
+
+        const handleDragLeave = (e) => {
+            const column = e.currentTarget;
+            if (!column.contains(e.relatedTarget)) {
+                column.classList.remove('drag-over');
+            }
+        };
+
+        const handleDrop = (e, targetColumn) => {
+            e.preventDefault();
+            const column = e.currentTarget;
+            column.classList.remove('drag-over');
+            
+            if (draggedCard && sourceColumn && sourceColumn !== targetColumn) {
+                // Remove from source
+                kanbanData[sourceColumn] = kanbanData[sourceColumn].filter(c => c.id !== draggedCard);
+                
+                // Update status based on column
+                const statusMap = {
+                    'new': 'unpaid',
+                    'inProgress': 'partial',
+                    'awaitingPayment': 'unpaid',
+                    'completed': 'paid'
+                };
+                draggedCardData.status = statusMap[targetColumn];
+                
+                // Add to target
+                kanbanData[targetColumn].push(draggedCardData);
+                
+                render();
+            }
+        };
+
+        // Touch drag and drop
+        let touchStartX, touchStartY, touchElement, touchClone;
+
+        const handleTouchStart = (e, cardId, columnKey) => {
+            const touch = e.touches[0];
+            touchStartX = touch.clientX;
+            touchStartY = touch.clientY;
+            touchElement = e.currentTarget;
+            draggedCard = cardId;
+            sourceColumn = columnKey;
+            draggedCardData = kanbanData[columnKey].find(c => c.id === cardId);
+            
+            // Create clone for dragging visual
+            setTimeout(() => {
+                if (touchElement) {
+                    touchClone = touchElement.cloneNode(true);
+                    touchClone.style.position = 'fixed';
+                    touchClone.style.zIndex = '9999';
+                    touchClone.style.width = touchElement.offsetWidth + 'px';
+                    touchClone.style.pointerEvents = 'none';
+                    touchClone.style.opacity = '0.9';
+                    touchClone.style.transform = 'rotate(2deg) scale(1.02)';
+                    touchClone.style.boxShadow = '0 10px 30px rgba(0,0,0,0.2)';
+                    document.body.appendChild(touchClone);
+                    touchElement.style.opacity = '0.3';
+                }
+            }, 150);
+        };
+
+        const handleTouchMove = (e, cardId) => {
+            if (!touchClone) return;
+            
+            const touch = e.touches[0];
+            touchClone.style.left = (touch.clientX - touchClone.offsetWidth / 2) + 'px';
+            touchClone.style.top = (touch.clientY - 30) + 'px';
+            
+            // Highlight column under touch
+            const elemBelow = document.elementFromPoint(touch.clientX, touch.clientY);
+            const column = elemBelow?.closest('.kanban-column');
+            
+            document.querySelectorAll('.kanban-column').forEach(col => {
+                col.classList.remove('drag-over');
+            });
+            
+            if (column) {
+                column.classList.add('drag-over');
+            }
+        };
+
+        const handleTouchEnd = (e, cardId) => {
+            if (touchClone) {
+                const touch = e.changedTouches[0];
+                const elemBelow = document.elementFromPoint(touch.clientX, touch.clientY);
+                const column = elemBelow?.closest('.kanban-column');
+                
+                if (column) {
+                    const targetColumn = column.dataset.column;
+                    if (targetColumn && sourceColumn !== targetColumn) {
+                        kanbanData[sourceColumn] = kanbanData[sourceColumn].filter(c => c.id !== draggedCard);
+                        
+                        const statusMap = {
+                            'new': 'unpaid',
+                            'inProgress': 'partial',
+                            'awaitingPayment': 'unpaid',
+                            'completed': 'paid'
+                        };
+                        draggedCardData.status = statusMap[targetColumn];
+                        kanbanData[targetColumn].push(draggedCardData);
+                    }
+                }
+                
+                touchClone.remove();
+                touchClone = null;
+            }
+            
+            if (touchElement) {
+                touchElement.style.opacity = '1';
+                touchElement = null;
+            }
+            
+            document.querySelectorAll('.kanban-column').forEach(col => {
+                col.classList.remove('drag-over');
+            });
+            
+            draggedCard = null;
+            draggedCardData = null;
+            sourceColumn = null;
+            
+            render();
+        };
+
+        // Render functions
+        const renderHeader = () => `
+            <div class="bg-gradient-to-r from-blue-500 to-blue-600 text-white p-3 sm:p-4 flex items-center gap-3 shadow-md">
+                <button class="text-xl hover:bg-white/20 rounded-lg p-1 transition">←</button>
+                <div class="flex-1">
+                    <div class="font-semibold text-base sm:text-lg">СтройКонтроль</div>
+                    <div class="text-xs opacity-80">
+                        ${{
+                            manager: '👤 Менеджер',
+                            accountant: '📊 Бухгалтер',
+                            owner: '👑 Собственник',
+                            driver: '🚛 Водитель'
+                        }[activeRole]}
+                    </div>
+                </div>
+                <button class="text-xl hover:bg-white/20 rounded-lg p-2 transition">⋮</button>
+            </div>
+        `;
+
+        const renderRoleSwitcher = () => `
+            <div class="bg-gray-50 p-2 flex gap-1 text-xs border-b overflow-x-auto">
+                ${['manager', 'accountant', 'owner', 'driver'].map(role => `
+                    <button onclick="setRole('${role}')" 
+                        class="px-2 sm:px-3 py-1.5 rounded-lg transition font-medium whitespace-nowrap ${activeRole === role ? 'bg-blue-500 text-white shadow' : 'bg-white hover:bg-gray-100'}">
+                        ${{manager: 'Менеджер', accountant: 'Бухгалтер', owner: 'Собственник', driver: 'Водитель'}[role]}
+                    </button>
+                `).join('')}
+            </div>
+        `;
+
+        const renderKanbanCard = (item, columnKey) => `
+            <div class="kanban-card p-3 rounded-xl border-l-4 mb-2 bg-white shadow-sm cursor-grab active:cursor-grabbing ${getStatusColor(item.status)}"
+                 draggable="true"
+                 ondragstart="handleDragStart(event, ${item.id}, '${columnKey}')"
+                 ondragend="handleDragEnd(event)"
+                 ontouchstart="handleTouchStart(event, ${item.id}, '${columnKey}')"
+                 ontouchmove="handleTouchMove(event, ${item.id})"
+                 ontouchend="handleTouchEnd(event, ${item.id})"
+                 data-card-id="${item.id}">
+                <div class="flex items-start justify-between">
+                    <div class="font-medium text-sm">${item.client}</div>
+                    <span class="text-lg">${getTypeIcon(item.type)}</span>
+                </div>
+                <div class="text-xs text-gray-600 mt-1">${item.material}</div>
+                <div class="text-sm font-bold mt-2">${item.price}</div>
+                <div class="text-xs text-gray-500 mt-1 flex items-center gap-1">
+                    📍 ${item.address.length > 20 ? item.address.substring(0, 20) + '...' : item.address}
+                </div>
+                ${item.daysOverdue ? `<div class="text-xs text-red-600 mt-1 font-medium">⚠️ Просрочка ${item.daysOverdue} дн.</div>` : ''}
+            </div>
+        `;
+
+        const renderFilters = () => `
+            <div class="flex gap-2 mb-4 overflow-x-auto pb-2 px-1">
+                <button onclick="setFilter('all')" class="filter-pill px-4 py-2 rounded-full text-sm font-medium shadow-sm ${activeFilter === 'all' ? 'active' : 'bg-white hover:bg-gray-50'}">
+                    Все <span class="ml-1 opacity-70">${Object.values(kanbanData).flat().length}</span>
+                </button>
+                <button onclick="setFilter('sypuchka')" class="filter-pill px-4 py-2 rounded-full text-sm font-medium shadow-sm ${activeFilter === 'sypuchka' ? 'active' : 'bg-white hover:bg-gray-50'}">
+                    🪨 Сыпучка <span class="ml-1 opacity-70">${Object.values(kanbanData).flat().filter(i => i.type === 'sypuchka').length}</span>
+                </button>
+                <button onclick="setFilter('tech')" class="filter-pill px-4 py-2 rounded-full text-sm font-medium shadow-sm ${activeFilter === 'tech' ? 'active' : 'bg-white hover:bg-gray-50'}">
+                    🚜 Техника <span class="ml-1 opacity-70">${Object.values(kanbanData).flat().filter(i => i.type === 'tech').length}</span>
+                </button>
+                <button onclick="setFilter('snow')" class="filter-pill px-4 py-2 rounded-full text-sm font-medium shadow-sm ${activeFilter === 'snow' ? 'active' : 'bg-white hover:bg-gray-50'}">
+                    ❄️ Снег <span class="ml-1 opacity-70">${Object.values(kanbanData).flat().filter(i => i.type === 'snow').length}</span>
+                </button>
+            </div>
+        `;
+
+        const renderColumnDots = () => `
+            <div class="column-dots">
+                ${columnKeys.map((key, i) => `
+                    <div class="column-dot ${i === activeColumnIndex ? 'active' : ''}" onclick="scrollToColumn(${i})"></div>
+                `).join('')}
+            </div>
+        `;
+
+        const renderKanban = () => `
+            <div class="p-3 sm:p-4">
+                ${renderFilters()}
+                
+                <div class="kanban-container" id="kanbanContainer" onscroll="handleKanbanScroll()">
+                    ${[
+                        { key: 'new', title: '📥 Новая', bg: 'bg-gray-50' },
+                        { key: 'inProgress', title: '🔄 В работе', bg: 'bg-blue-50' },
+                        { key: 'awaitingPayment', title: '💰 Оплата', bg: 'bg-yellow-50' },
+                        { key: 'completed', title: '✅ Готово', bg: 'bg-green-50' }
+                    ].map(col => `
+                        <div class="kanban-column ${col.bg} rounded-xl p-3"
+                             data-column="${col.key}"
+                             ondragover="handleDragOver(event)"
+                             ondragenter="handleDragEnter(event, '${col.key}')"
+                             ondragleave="handleDragLeave(event)"
+                             ondrop="handleDrop(event, '${col.key}')">
+                            <div class="flex items-center justify-between mb-3 sticky top-0 ${col.bg} py-1">
+                                <span class="font-semibold text-sm">${col.title}</span>
+                                <span class="bg-white px-2 py-0.5 rounded-full text-xs font-medium shadow-sm">${getColumnCount(col.key)}</span>
+                            </div>
+                            <div class="min-h-[200px]">
+                                ${getFilteredData(kanbanData[col.key]).map(item => renderKanbanCard(item, col.key)).join('')}
+                                ${col.key === 'new' ? `
+                                    <button onclick="setScreen('create')" class="w-full py-3 border-2 border-dashed border-gray-300 rounded-xl text-gray-400 text-sm hover:border-blue-400 hover:text-blue-400 transition">
+                                        + Добавить
+                                    </button>
+                                ` : ''}
+                            </div>
+                        </div>
+                    `).join('')}
+                </div>
+                
+                ${renderColumnDots()}
+                
+                <div class="text-center text-xs text-gray-400 mt-2 lg:hidden">
+                    ← Свайпайте для просмотра колонок →
+                </div>
+            </div>
+        `;
+
+        const renderSchedule = () => `
+            <div class="p-3 sm:p-4">
+                <div class="flex items-center justify-between mb-4">
+                    <button class="p-2 bg-white rounded-lg shadow-sm hover:bg-gray-50 transition">←</button>
+                    <div class="text-center">
+                        <div class="font-bold">Сегодня, 18 декабря</div>
+                        <div class="text-xs text-gray-500">Четверг</div>
+                    </div>
+                    <button class="p-2 bg-white rounded-lg shadow-sm hover:bg-gray-50 transition">→</button>
+                </div>
+
+                <div class="flex gap-3 sm:gap-4 mb-4 text-xs justify-center flex-wrap">
+                    <span class="flex items-center gap-1"><span class="w-3 h-3 bg-green-500 rounded-sm"></span> Оплачено</span>
+                    <span class="flex items-center gap-1"><span class="w-3 h-3 bg-yellow-500 rounded-sm"></span> Частично</span>
+                    <span class="flex items-center gap-1"><span class="w-3 h-3 bg-red-500 rounded-sm"></span> Не оплачено</span>
+                </div>
+
+                <div class="overflow-x-auto rounded-xl border bg-white shadow-sm">
+                    <div style="min-width: 520px">
+                        <div class="flex border-b bg-gray-50">
+                            <div class="w-28 sm:w-32 p-2 sm:p-3 font-medium text-xs text-gray-600">Ресурс</div>
+                            ${timeSlots.map(time => `
+                                <div class="flex-1 p-2 sm:p-3 text-center text-xs font-medium border-l text-gray-600">${time}</div>
+                            `).join('')}
+                        </div>
+
+                        ${resources.map(resource => `
+                            <div class="flex border-b last:border-b-0 relative" style="height: 48px">
+                                <div class="w-28 sm:w-32 p-2 bg-gray-50 text-xs flex items-center gap-1 border-r">
+                                    <span>${resource.icon}</span>
+                                    <span class="truncate font-medium">${resource.name}</span>
+                                </div>
+                                <div class="flex-1 relative">
+                                    <div class="absolute inset-0 flex">
+                                        ${timeSlots.map((_, i) => `
+                                            <div class="flex-1 border-l border-gray-100 time-cell cursor-pointer"></div>
+                                        `).join('')}
+                                    </div>
+                                    ${bookings
+                                        .filter(b => b.resourceId === resource.id)
+                                        .map(booking => `
+                                            <div class="booking-block absolute top-1 bottom-1 rounded-lg ${getStatusBg(booking.status)} text-white text-xs flex items-center justify-center px-2 font-medium shadow-sm cursor-pointer"
+                                                 style="left: calc(${(booking.start / timeSlots.length) * 100}% + 2px); width: calc(${(booking.duration / timeSlots.length) * 100}% - 4px)">
+                                                ${booking.client}
+                                            </div>
+                                        `).join('')}
+                                </div>
+                            </div>
+                        `).join('')}
+                    </div>
+                </div>
+
+                <button onclick="setScreen('create')" class="fixed bottom-24 right-4 w-14 h-14 bg-blue-500 text-white rounded-full shadow-lg text-2xl hover:bg-blue-600 transition active:scale-95">
+                    +
+                </button>
+            </div>
+        `;
+
+        const renderDebtors = () => `
+            <div class="p-3 sm:p-4">
+                <div class="bg-gradient-to-r from-red-500 to-red-600 text-white rounded-xl p-4 mb-4 shadow-md">
+                    <div class="text-sm opacity-90">Общая задолженность</div>
+                    <div class="text-2xl sm:text-3xl font-bold mt-1">263 500 ₽</div>
+                    <div class="text-xs opacity-75 mt-1">7 неоплаченных сделок</div>
+                </div>
+
+                <div class="flex gap-2 mb-4 overflow-x-auto pb-1">
+                    <button class="px-4 py-2 bg-blue-500 text-white rounded-full text-sm font-medium shadow-sm whitespace-nowrap">По сумме</button>
+                    <button class="px-4 py-2 bg-white rounded-full text-sm shadow-sm hover:bg-gray-50 whitespace-nowrap">По дате</button>
+                    <button class="px-4 py-2 bg-white rounded-full text-sm shadow-sm hover:bg-gray-50 whitespace-nowrap">По клиенту</button>
+                </div>
+
+                <div class="space-y-3">
+                    ${debtors.map(debtor => `
+                        <div class="bg-white border border-red-100 rounded-xl p-3 sm:p-4 flex justify-between items-center shadow-sm hover:shadow-md transition cursor-pointer">
+                            <div class="min-w-0 flex-1">
+                                <div class="font-semibold truncate">${debtor.client}</div>
+                                <div class="text-xs text-gray-500 mt-1">${debtor.deals} сделок • Просрочка ${debtor.overdue}</div>
+                            </div>
+                            <div class="text-right ml-3">
+                                <div class="font-bold text-red-600 text-base sm:text-lg">${debtor.total}</div>
+                                <div class="text-xs text-blue-500 hover:underline">Подробнее →</div>
+                            </div>
+                        </div>
+                    `).join('')}
+                </div>
+
+                <button class="w-full mt-4 py-3 bg-white rounded-xl text-sm font-medium shadow-sm hover:bg-gray-50 transition border">
+                    📊 Выгрузить отчёт в Excel
+                </button>
+            </div>
+        `;
+
+        const renderCreateForm = () => `
+            <div class="p-3 sm:p-4">
+                <div class="text-lg sm:text-xl font-bold mb-4">Новая заявка</div>
+                
+                <div class="mb-5">
+                    <div class="text-sm text-gray-600 mb-2 font-medium">Категория</div>
+                    <div class="flex gap-2">
+                        <button class="flex-1 py-3 bg-blue-500 text-white rounded-xl text-sm font-medium shadow-sm">🪨 Сыпучка</button>
+                        <button class="flex-1 py-3 bg-white rounded-xl text-sm shadow-sm hover:bg-gray-50 border">🚜 Техника</button>
+                        <button class="flex-1 py-3 bg-white rounded-xl text-sm shadow-sm hover:bg-gray-50 border">❄️ Снег</button>
+                    </div>
+                </div>
+
+                <div class="space-y-4">
+                    <div>
+                        <label class="text-sm text-gray-600 font-medium">Клиент / Контакт</label>
+                        <input type="text" class="w-full p-3 border rounded-xl mt-1 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none" placeholder="ООО или ФИО + телефон">
+                    </div>
+                    
+                    <div>
+                        <label class="text-sm text-gray-600 font-medium">Адрес доставки</label>
+                        <div class="flex gap-2 mt-1">
+                            <input type="text" class="flex-1 p-3 border rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none" placeholder="ул. Примерная, д. 1">
+                            <button class="px-4 bg-gray-100 rounded-xl hover:bg-gray-200 transition text-xl">📍</button>
+                        </div>
+                    </div>
+
+                    <div class="flex gap-3">
+                        <div class="flex-1">
+                            <label class="text-sm text-gray-600 font-medium">Материал</label>
+                            <select class="w-full p-3 border rounded-xl mt-1 bg-white focus:ring-2 focus:ring-blue-500 outline-none">
+                                <option>Щебень 5-20</option>
+                                <option>Щебень 20-40</option>
+                                <option>Песок карьерный</option>
+                                <option>Песок речной</option>
+                            </select>
+                        </div>
+                        <div class="w-24 sm:w-28">
+                            <label class="text-sm text-gray-600 font-medium">Объём</label>
+                            <input type="text" class="w-full p-3 border rounded-xl mt-1 focus:ring-2 focus:ring-blue-500 outline-none" placeholder="20т">
+                        </div>
+                    </div>
+
+                    <div class="flex gap-3">
+                        <div class="flex-1">
+                            <label class="text-sm text-gray-600 font-medium">Цена, ₽</label>
+                            <input type="text" class="w-full p-3 border rounded-xl mt-1 focus:ring-2 focus:ring-blue-500 outline-none" placeholder="45 000">
+                        </div>
+                        <div class="flex-1">
+                            <label class="text-sm text-gray-600 font-medium">Оплата</label>
+                            <select class="w-full p-3 border rounded-xl mt-1 bg-white focus:ring-2 focus:ring-blue-500 outline-none">
+                                <option>Наличные</option>
+                                <option>Безнал</option>
+                                <option>Карта</option>
+                            </select>
+                        </div>
+                    </div>
+
+                    <div>
+                        <label class="text-sm text-gray-600 font-medium">Дата и время</label>
+                        <input type="datetime-local" class="w-full p-3 border rounded-xl mt-1 focus:ring-2 focus:ring-blue-500 outline-none">
+                    </div>
+
+                    <div>
+                        <label class="text-sm text-gray-600 font-medium">Комментарий</label>
+                        <textarea class="w-full p-3 border rounded-xl mt-1 focus:ring-2 focus:ring-blue-500 outline-none resize-none" rows="2" placeholder="Доп. информация..."></textarea>
+                    </div>
+                </div>
+
+                <button class="w-full mt-6 py-4 bg-blue-500 text-white rounded-xl font-semibold shadow-md hover:bg-blue-600 transition active:scale-[0.98]">
+                    Создать заявку
+                </button>
+            </div>
+        `;
+
+        const renderDriverScreen = () => `
+            <div class="p-3 sm:p-4">
+                <div class="flex items-center justify-between mb-5">
+                    <div>
+                        <div class="text-lg sm:text-xl font-bold">Мои задачи</div>
+                        <div class="text-sm text-gray-500">Сегодня, 18 декабря</div>
+                    </div>
+                    <div class="text-right bg-blue-50 rounded-xl p-3">
+                        <div class="text-2xl sm:text-3xl">🚛</div>
+                        <div class="text-xs text-blue-600 font-medium">КАМАЗ-001</div>
+                    </div>
+                </div>
+
+                <div class="space-y-3">
+                    ${driverTasks.map(task => `
+                        <div class="${
+                            task.status === 'done' ? 'bg-green-50 border-green-200' :
+                            task.status === 'current' ? 'bg-blue-50 border-2 border-blue-400' :
+                            'bg-white border-gray-200'
+                        } border rounded-xl p-3 sm:p-4 transition">
+                            <div class="flex justify-between items-start">
+                                <div class="min-w-0 flex-1">
+                                    <div class="text-xs font-semibold ${
+                                        task.status === 'done' ? 'text-green-600' :
+                                        task.status === 'current' ? 'text-blue-600' :
+                                        'text-gray-400'
+                                    }">
+                                        ${task.status === 'done' ? '✓ ВЫПОЛНЕНО' : task.status === 'current' ? '● ТЕКУЩАЯ' : 'СЛЕДУЮЩАЯ'}
+                                    </div>
+                                    <div class="font-semibold mt-1 text-base sm:text-lg truncate">${task.client}</div>
+                                    <div class="text-sm text-gray-600">${task.material}</div>
+                                </div>
+                                <div class="text-right ml-3">
+                                    <div class="text-lg font-bold ${task.status === 'current' ? 'text-blue-600' : ''}">${task.time}</div>
+                                </div>
+                            </div>
+                            <div class="mt-3 text-sm text-gray-500 flex items-center gap-1">
+                                📍 ${task.address}
+                            </div>
+                            ${task.status === 'current' ? `
+                                <button class="w-full mt-3 py-3 bg-blue-500 text-white rounded-xl text-sm font-medium shadow-sm hover:bg-blue-600 transition">
+                                    🗺️ Открыть в навигаторе
+                                </button>
+                            ` : ''}
+                        </div>
+                    `).join('')}
+                </div>
+
+                <div class="mt-6 p-4 bg-gray-50 rounded-xl text-center">
+                    <div class="text-sm text-gray-500">Выполнено сегодня</div>
+                    <div class="text-2xl font-bold text-green-600 mt-1">1 из 3</div>
+                </div>
+            </div>
+        `;
+
+        const renderBottomNav = () => {
+            if (activeRole === 'driver') return '';
+            
+            const items = [
+                { key: 'kanban', icon: '📋', label: 'Заявки' },
+                { key: 'schedule', icon: '📅', label: 'Расписание' },
+                { key: 'create', icon: '➕', label: 'Создать' },
+            ];
+            
+            if (activeRole === 'accountant' || activeRole === 'owner') {
+                items.push({ key: 'debtors', icon: '💰', label: 'Долги' });
+            }
+            if (activeRole === 'owner') {
+                items.push({ key: 'reports', icon: '📊', label: 'Отчёты' });
+            }
+
+            return `
+                <div class="bg-white border-t flex shadow-lg">
+                    ${items.map(item => `
+                        <button onclick="setScreen('${item.key}')" 
+                            class="nav-btn flex-1 py-2 sm:py-3 text-center ${activeScreen === item.key ? 'text-blue-500' : 'text-gray-400'} hover:bg-gray-50">
+                            <div class="text-lg sm:text-xl">${item.icon}</div>
+                            <div class="text-xs font-medium">${item.label}</div>
+                        </button>
+                    `).join('')}
+                </div>
+            `;
+        };
+
+        const renderContent = () => {
+            if (activeRole === 'driver') return renderDriverScreen();
+            
+            switch(activeScreen) {
+                case 'kanban': return renderKanban();
+                case 'schedule': return renderSchedule();
+                case 'debtors': return renderDebtors();
+                case 'create': return renderCreateForm();
+                default: return renderKanban();
+            }
+        };
+
+        // Main render
+        const render = () => {
+            document.getElementById('app').innerHTML = `
+                ${renderHeader()}
+                ${renderRoleSwitcher()}
+                <div class="flex-1 overflow-auto bg-gray-50">
+                    ${renderContent()}
+                </div>
+                ${renderBottomNav()}
+            `;
+        };
+
+        // Event handlers
+        window.setScreen = (screen) => {
+            activeScreen = screen;
+            render();
+        };
+
+        window.setRole = (role) => {
+            activeRole = role;
+            if (role === 'driver') {
+                activeScreen = 'driver';
+            } else if (activeScreen === 'driver') {
+                activeScreen = 'kanban';
+            }
+            render();
+        };
+
+        window.setFilter = (filter) => {
+            activeFilter = filter;
+            render();
+        };
+
+        window.scrollToColumn = (index) => {
+            const container = document.getElementById('kanbanContainer');
+            const columns = container.querySelectorAll('.kanban-column');
+            if (columns[index]) {
+                columns[index].scrollIntoView({ behavior: 'smooth', inline: 'start' });
+                activeColumnIndex = index;
+                updateColumnDots();
+            }
+        };
+
+        window.handleKanbanScroll = () => {
+            const container = document.getElementById('kanbanContainer');
+            const columns = container.querySelectorAll('.kanban-column');
+            const scrollLeft = container.scrollLeft;
+            const columnWidth = columns[0]?.offsetWidth || 0;
+            
+            activeColumnIndex = Math.round(scrollLeft / columnWidth);
+            updateColumnDots();
+        };
+
+        const updateColumnDots = () => {
+            document.querySelectorAll('.column-dot').forEach((dot, i) => {
+                dot.classList.toggle('active', i === activeColumnIndex);
+            });
+        };
+
+        // Make drag handlers global
+        window.handleDragStart = handleDragStart;
+        window.handleDragEnd = handleDragEnd;
+        window.handleDragOver = handleDragOver;
+        window.handleDragEnter = handleDragEnter;
+        window.handleDragLeave = handleDragLeave;
+        window.handleDrop = handleDrop;
+        window.handleTouchStart = handleTouchStart;
+        window.handleTouchMove = handleTouchMove;
+        window.handleTouchEnd = handleTouchEnd;
+
+        // Initial render
+        render();
+    </script>
+</body>
+</html>
